@@ -1,0 +1,199 @@
+---
+title: "MovieLens"
+date: "September 9, 2016"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(data.table)
+library(tidyr)
+library(sqldf)
+library(dplyr)
+library(ggplot2)
+library(gridExtra)
+library(maps)
+```
+
+### Introduction
+
+Today I am going to analyze the MovieLens data sets, which were collected by the GroupLens Research Project at the University of Minnesota through the MovieLens web site.This data set consists of 100,000 ratings from 943 users on 1682 movies, and was released in April 1998. Each user has rated at least 20 movies, and basic demographic information for the users are included in the data set. 
+
+The data set has three tables. The table 'User' includes basic demographic info such as age and gender; the table 'Data' includes ratings; and the table 'Movies' includes information for the movies. I merge the three tables together.
+
+```{r intro}
+users <- read.table('ml-100k/u.user', sep='|')
+colnames(users) <- c('user_id', 'age', 'sex', 'occupation', 'zip_code') #Assign column names
+ratings <- read.table('ml-100k/u.data', sep='\t')
+colnames(ratings) <- c('user_id', 'movie_id', 'rating', 'unix_timestamp')
+movies <- fread('ml-100k/u.item', sep='|', select = c(1:5))
+colnames(movies) <- c('movie_id', 'title', 'release_date', 'video_release_date', 'imdb_url')
+movie_ratings = merge(movies, ratings, by="movie_id")
+lens = merge(movie_ratings, users, by="user_id")
+```
+
+### Distribution of Users' Ages
+
+Let's take a look at the distribution of users' ages.
+
+```{r age}
+ggplot(aes(x=age), data=users) + geom_histogram(aes(fill=..count..), binwidth = 5) + 
+  ggtitle("Distribution of users' ages") + xlab('age') +ylab('count of users') + 
+  scale_x_continuous(breaks = seq(0,81,5)) + 
+  scale_fill_gradient("Count", low = "#66CCFF", high = "#003366")
+```
+
+The plot shows that the majority of users are 20 years old to 50 years old. This makes sense because young people are more likely to rate movies than children and older people.
+
+Then I would also like to take a look the distribution of user's ages by gender.
+
+```{r age gender}
+ggplot(aes(x=age), data=users) + geom_histogram(aes(fill=..count..), binwidth = 5) + 
+  ggtitle("Distribution of users' ages") + xlab('age') +ylab('count of users') + 
+  scale_x_continuous(breaks = seq(0,81,5)) + 
+  scale_fill_gradient("Count", low = "#66CCFF", high = "#003366") + 
+  facet_wrap(~sex, ncol=2)
+```
+
+The graph shows that the number of male users is much higher than that of female users. It may seem strange at first, but it kind of makes sense because this data set was collected in 1998. Back then the Internet was not universal. Some certain groups, such as programmers, might be more active on the Internet than others.
+
+### Ratings by Age Group
+
+I am interested in comparing ratings by different ages. To easily analyze the data, I put data into eight age groups.
+
+```{r age group}
+agelabel <- c('0-9', '10-19', '20-29', '30-39', '40-49', '50-59', '60-69', '70-79')
+lens$age_group <- cut(lens$age, seq(0,81,10), include.lowest=TRUE, right=FALSE, labels=agelabel)
+
+rating_by_age_group <- lens %>% group_by(age_group) %>% summarise(mean=mean(rating))
+
+ggplot(data=rating_by_age_group, aes(x=age_group, y=mean)) +
+  geom_bar(stat="identity", fill="#FF6666") + 
+  scale_y_continuous(limits = c(0, 5)) + 
+  ggtitle("Ratings by Age Group") + 
+  ylab("Movie Ratings") + 
+  xlab("Age Groups")
+```
+
+It does not seem like age plays an important role in ratings. Only ratings by age group 10-19 years old, 20-29 years old are slightly lower than other age groups. However, the difference is not significant.
+
+Then I am also interested in ratings by different age groups and gender. 
+```{r age group gender}
+rating_by_age_group_sex <- lens %>% group_by(sex, age_group) %>% summarise(mean=mean(rating))
+ggplot(data=rating_by_age_group_sex, aes(x=age_group, y=mean, fill=sex)) +
+  geom_bar(stat="identity", position=position_dodge()) + 
+  scale_y_continuous(limits = c(0, 5))+ 
+  ggtitle("Ratings by Age Group and Sex") + 
+  ylab("Movie Ratings") + 
+  xlab("Age Groups")
+```
+
+The rating difference caused by gender within every age group is not considerable except age groups 60-69 years old and 70-70 years old. For these two age groups, the ratings by males are obviously higher than that by females. 
+
+### Ratings by Occupation
+
+Then let's look if occupation matters in terms of movie ratings. First, let's plot count of ratings by occupation. 
+
+```{r occupation}
+total_rating_by_occupation <- lens %>% group_by(occupation) %>% 
+  summarise(mean=mean(rating), N=n()) %>% arrange(desc(mean))
+
+ggplot(aes(x=reorder(occupation, N), y=N, fill=N), data=total_rating_by_occupation) +
+  geom_bar(stat = "identity") + 
+  scale_fill_gradient("Count", low = "#66CCFF", high = "#003366") + 
+  ylab("Number of Ratings") + 
+  xlab("Occupation") + 
+  ggtitle("Number of Ratings by Occupation") + 
+  coord_flip()
+```
+
+It looks like students rated a lot of movies, which makes sense because students were more likely to have access to the Internet in 1998. 
+
+```{r occupation mean}
+ggplot(aes(x=reorder(occupation, mean), y=mean, fill=mean), data=total_rating_by_occupation) + 
+  geom_bar(stat = "identity") + 
+  scale_fill_gradient("Mean", low = "#66CCFF", high = "#003366") + 
+  ylab("Average Ratings") + 
+  xlab("Occupation") + 
+  ggtitle("Average Ratings by Occupation") + 
+  scale_y_continuous(limits = c(0, 4)) + 
+  coord_flip()
+```
+
+Healthcare workers are likely to give lower ratings compared to other occupation. Otherwise, ratings across occupations look consistent. 
+
+### Ratings by Income
+
+My another interest is whether income relates to ratings. Since zip code is included in the data set, it is possible to link ratings to income if I can find income by zip code data. Luckily I found median income by zip code online and merge it to the MovieLens data.
+
+```{r income}
+zipincome <- read.csv("zipincome.csv")
+zipincome$Zip <- as.factor(zipincome$Zip)
+lens3 <- merge(lens, zipincome, by.x="zip_code", by.y="Zip")
+
+rating_by_income <- lens3 %>% group_by(Median) %>% summarise(mean=mean(rating), N=n()) %>% arrange(desc(Median))
+ggplot(aes(x=Median, y=mean), data=rating_by_income) + geom_point() + 
+  geom_smooth() + 
+  ggtitle("Ratings by Income") + 
+  xlab("Median Income") + 
+  ylab("Average Ratings")
+```
+
+It does not look like income is related to ratings. We can tell this by looking at the plot. The regression line is pretty flat. 
+
+### Ratings By State
+
+Again, since zip code is included in the data set, I can also look at ratings by state. It is also a great chance to practice the Maps function in ggplot.
+
+```{r state}
+zip <- read.csv("us_postal_codes.csv")
+zip$Postal.Code <- as.factor(zip$Postal.Code)
+lens1 <- merge(lens, zip, by.x="zip_code", by.y="Postal.Code")
+lens1$imdb_url <- NULL
+lens1$video_release_date <- NULL
+rating_by_state <- lens1 %>% group_by(State) %>% summarise(mean=mean(rating), N=n()) %>% arrange(desc(N))
+rating_by_state$State <- tolower(rating_by_state$State)
+states_map <- map_data("state")
+rating_by_state_map <- merge(states_map, rating_by_state, by.x="region", by.y="State")
+rating_by_state_map <- rating_by_state_map %>% arrange(group, order)
+
+ggplot(rating_by_state_map, aes(x=long, y=lat, group=group, fill=mean)) +
+  geom_polygon(colour="black") +
+  coord_map("polyconic") + 
+  scale_fill_gradient("Rating", low = "#99FFFF", high = "#003366") + 
+  ggtitle("Movie Ratings by State")
+
+ratings1000 <- rating_by_state %>% arrange(desc(mean)) %>% filter(N>1000)
+ratings1000df <- data.frame(ratings1000)
+ratings1000df
+```
+
+For states with more than 1000 ratings, Wisconsin gives the highest ratings, which is 3.75 out of 5, and Maryland gives the lowest ratings, which is 3.25 out of 5.
+
+### New York's vs California
+
+If you let me name two states relative to movies, my answer would be New York and California. Therefore, I am interested in taking a further look at movie ratings by these two states. I select the 50 most rated movies, and compare ratings between New York and California on these 50 movies.
+
+```{r NY vs CA, fig.width=9, fig.height=6, warning=FALSE}
+most <- lens %>% group_by(movie_id) %>% summarise(N = n()) %>% arrange(desc(N))
+most50 <- most[0:50,]
+most_50 <- merge(most50, lens1, by="movie_id")
+
+NYCAMoives <- most_50 %>% group_by(title, State) %>% 
+  summarise(mean=mean(rating)) %>% 
+  spread(State,mean) %>% select(title, California, `New York`) %>% 
+  mutate(diff=California-`New York`)
+
+ggplot(aes(x=reorder(title, diff), y=diff, fill=diff), data=NYCAMoives) + 
+  geom_bar(stat = "identity") + coord_flip() + 
+  scale_fill_gradient("Difference", low = "#66CCFF", high = "#003366") + 
+  ylab("New York's Movie Favor vs California's Moive Favor") + 
+  xlab("Movie Titles")
+```
+
+Looks like California users like Star Wars, Pulp Fiction, and Titanic more than New York users, while New York users prefer movies like Dead Man Walking and Mr. Holland's Opus.
+
+### Citation
+F. Maxwell Harper and Joseph A. Konstan. 2015. The MovieLens Datasets:
+History and Context. ACM Transactions on Interactive Intelligent
+Systems (TiiS) 5, 4, Article 19 (December 2015), 19 pages.
+DOI=http://dx.doi.org/10.1145/2827872
